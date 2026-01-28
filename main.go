@@ -11,23 +11,6 @@ import (
 	"time"
 )
 
-type config struct {
-	// Directories to fetch sources from.
-	SourceDirectories []string
-	// Directory holding all outputs.
-	OutputDirectory string
-	// Subdirectory of OutputDirectory, that is used for dumping new outputs.
-	DumpSubdirectory string
-	// Command to apply to each source.
-	Command string
-	// File extensions to search for.
-	Extensions []string
-	// Number of jobs to run simultaniously.
-	NumJobs int
-	// Cache location.
-	CachePath string
-}
-
 type hash [16]byte
 
 type sourceFile struct {
@@ -52,16 +35,23 @@ func main() {
 }
 
 func m() int {
-	cfg := &config{} // TODO: Config parsing.
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	cfg, err := parseConfig()
+	if err != nil {
+		fmt.Println("failed parsing flags:", err)
+		return 1
+	}
 
 	if err := run(ctx, cfg); err != nil {
 		if errors.Is(err, errLocked) {
 			fmt.Println("Cache is locked by another process")
-			return 1
+		} else if errors.Is(err, context.Canceled) {
+			fmt.Println("Canceled")
 		}
+		fmt.Println("Error:", err)
+		return 1
 	}
 
 	fmt.Println("Success")
