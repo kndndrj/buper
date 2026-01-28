@@ -86,8 +86,8 @@ func applyCommand(ctx context.Context, sourcePath, command string) (outputPath s
 	rand := strconv.Itoa(int(time.Now().UnixNano()))
 	outputPath = filepath.Join(tempdir, filepath.Base(sourcePath)+"."+rand)
 
-	command = strings.ReplaceAll(command, "$in", sourcePath)
-	command = strings.ReplaceAll(command, "$out", outputPath)
+	command = strings.ReplaceAll(command, "$in", `"`+sourcePath+`"`)
+	command = strings.ReplaceAll(command, "$out", `"`+outputPath+`"`)
 
 	// Execute using sh -c to allow piping and shell features.
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)

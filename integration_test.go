@@ -39,8 +39,6 @@ func TestIntegration(t *testing.T) {
 	cases := []struct {
 		comment string
 
-		jobs int // Number of jobs to run.
-
 		fs    map[string]string
 		cache []any // *sourceFile or *outputFile.
 
@@ -115,8 +113,6 @@ func TestIntegration(t *testing.T) {
 		},
 		{
 			comment: "dumped output name conflict",
-
-			jobs: 1, // This test needs to be synchronous, so that file scanning is predictable.
 
 			fs: map[string]string{
 				"src/file1.yes":     "content of file 1",
@@ -232,6 +228,23 @@ func TestIntegration(t *testing.T) {
 				out("out/dump/file1.yes", 28, t1, "2887f195dec56162d856acb79f91c5ef"),
 			},
 		},
+		{
+			comment: "filenames with spaces",
+
+			fs: map[string]string{
+				"src/file 1.yes": "content of file 1",
+			},
+
+			expectFS: map[string]string{
+				"src/file 1.yes": "content of file 1",
+
+				"out/dump/file 1.yes": "content of file 1 - modified",
+			},
+			expectCache: []any{
+				src("src/file 1.yes", 17, t0, cmd, "2887f195dec56162d856acb79f91c5ef"),
+				out("out/dump/file 1.yes", 28, t1, "2887f195dec56162d856acb79f91c5ef"),
+			},
+		},
 	}
 
 	for _, tt := range cases {
@@ -259,18 +272,12 @@ func TestIntegration(t *testing.T) {
 
 			prefillCache(t, root, cache, tt.cache)
 
-			jobs := tt.jobs
-			if jobs == 0 {
-				jobs = 20
-			}
-
 			cfg := &config{
 				SourceDirectories: []string{srcdir},
 				OutputDirectory:   outdir,
 				DumpSubdirectory:  "dump",
 				Command:           cmd,
 				Extensions:        []string{".yes"},
-				NumJobs:           jobs,
 			}
 
 			err = process(t.Context(), cfg, cache)
