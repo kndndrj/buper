@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/md5"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -54,7 +56,7 @@ func hasExtension(path string, extensions []string) bool {
 }
 
 func md5Hash(path string) (hash, error) {
-	var result [16]byte
+	var result hash
 
 	path = filepath.Clean(path)
 
@@ -73,10 +75,16 @@ func md5Hash(path string) (hash, error) {
 	return result, nil
 }
 
+var tempdir = filepath.Join(os.TempDir(), "buper")
+
+func createTempdir() error {
+	return os.MkdirAll(tempdir, 0o700)
+}
+
 // applyCommand applies command to the source path and produces an output at output path.
 func applyCommand(ctx context.Context, sourcePath, command string) (outputPath string, err error) {
 	rand := strconv.Itoa(int(time.Now().UnixNano()))
-	outputPath = filepath.Join(os.TempDir(), "buper", filepath.Base(sourcePath)+"."+rand)
+	outputPath = filepath.Join(tempdir, filepath.Base(sourcePath)+"."+rand)
 
 	command = strings.ReplaceAll(command, "$in", sourcePath)
 	command = strings.ReplaceAll(command, "$out", outputPath)
@@ -93,4 +101,48 @@ func applyCommand(ctx context.Context, sourcePath, command string) (outputPath s
 	}
 
 	return outputPath, nil
+}
+
+var movemu sync.Mutex
+
+// move moves a file from src to dst.
+// operations are synchronized.
+func move(src, dst string) (newdst string, err error) {
+	movemu.Lock()
+	defer movemu.Unlock()
+
+	// Check if a destination already exists and add a suffix if it does.
+	var dstname func(iteration int) (string, error)
+	dstname = func(iteration int) (string, error) {
+		ext := filepath.Ext(dst)
+		base := strings.TrimSuffix(dst, ext)
+		target := base + "-" + strconv.Itoa(iteration) + ext
+		if iteration == 0 {
+			target = dst
+		}
+
+		_, err := os.Stat(target)
+		if err == nil {
+			return dstname(iteration + 1)
+		}
+
+		if !errors.Is(err, os.ErrNotExist) {
+			// Other error.
+			return "", err
+		}
+
+		// File doesn't exist.
+		return target, nil
+	}
+
+	newdst, err = dstname(0)
+	if err != nil {
+		return "", fmt.Errorf("failed getting destination file: %w", err)
+	}
+
+	if err := os.Rename(src, newdst); err != nil {
+		return "", fmt.Errorf("failed renaming file: %w", err)
+	}
+
+	return newdst, nil
 }

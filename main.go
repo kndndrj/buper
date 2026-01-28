@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
-
-	"golang.org/x/sync/errgroup"
 )
 
 type config struct {
@@ -54,7 +52,7 @@ func main() {
 }
 
 func m() int {
-	cfg := &config{}
+	cfg := &config{} // TODO: Config parsing.
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -75,13 +73,25 @@ func run(ctx context.Context, cfg *config) error {
 	if err != nil {
 		return fmt.Errorf("failed creating cache: %w", err)
 	}
-	defer func() { fmt.Println("failed closing cache:", cache.Close()) }()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			fmt.Println("failed closing cache:", err)
+		}
+	}()
+	return process(ctx, cfg, cache)
+}
+
+// process contains the core logic.
+func process(ctx context.Context, cfg *config, cache *cache) error {
+	if err := createTempdir(); err != nil {
+		return fmt.Errorf("failed creating temporary directory: %w", err)
+	}
 
 	if err := cache.Invalidate(ctx); err != nil {
 		return fmt.Errorf("failed invalidating cache: %w", err)
 	}
 
-	if err = updateOutputCache(ctx, cache, cfg); err != nil {
+	if err := updateOutputCache(ctx, cache, cfg); err != nil {
 		return fmt.Errorf("failed updating output directory cache: %w", err)
 	}
 
@@ -93,13 +103,15 @@ func run(ctx context.Context, cfg *config) error {
 		return fmt.Errorf("failed cleaning cache: %w", err)
 	}
 
+	if err := cleanDumpDirectory(ctx, cache, cfg); err != nil {
+		return fmt.Errorf("failed cleaning dump directory: %w", err)
+	}
+
 	return nil
 }
 
 // updateOutputCache updates cache of a directory holding output files.
 func updateOutputCache(ctx context.Context, cache *cache, cfg *config) error {
-	g, ctx := errgroup.WithContext(ctx)
-	g.SetLimit(cfg.NumJobs)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -108,13 +120,9 @@ func updateOutputCache(ctx context.Context, cache *cache, cfg *config) error {
 			return fmt.Errorf("find error: %w", err)
 		}
 
-		g.Go(func() error {
-			return updateOutputCacheFile(ctx, cache, f)
-		})
-	}
-
-	if err := g.Wait(); err != nil {
-		return fmt.Errorf("failed processing sources: %w", err)
+		if err := updateOutputCacheFile(ctx, cache, f); err != nil {
+			return fmt.Errorf("failed updating cache file: %w", err)
+		}
 	}
 
 	return nil
@@ -150,11 +158,10 @@ func updateOutputCacheFile(ctx context.Context, cache *cache, path string) error
 	return nil
 }
 
+// processSources processes source files to produce new output files.
 func processSources(ctx context.Context, cache *cache, cfg *config) error {
 	dumpDirectory := filepath.Join(cfg.OutputDirectory, cfg.DumpSubdirectory)
 
-	g, ctx := errgroup.WithContext(ctx)
-	g.SetLimit(cfg.NumJobs)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -164,14 +171,10 @@ func processSources(ctx context.Context, cache *cache, cfg *config) error {
 				return fmt.Errorf("find error: %w", err)
 			}
 
-			g.Go(func() error {
-				return processSource(ctx, cache, f, cfg.Command, dumpDirectory)
-			})
+			if err := processSource(ctx, cache, f, cfg.Command, dumpDirectory); err != nil {
+				return fmt.Errorf("failed processing source: %w", err)
+			}
 		}
-	}
-
-	if err := g.Wait(); err != nil {
-		return fmt.Errorf("failed processing sources: %w", err)
 	}
 
 	return nil
@@ -188,7 +191,7 @@ func processSource(ctx context.Context, cache *cache, path string, command strin
 		return fmt.Errorf("failed checking file cache: %w", err)
 	}
 
-	var outputPath string
+	var processedPath string
 	if !valid {
 		out, err := applyCommand(ctx, path, command)
 		if err != nil {
@@ -200,8 +203,18 @@ func processSource(ctx context.Context, cache *cache, path string, command strin
 			return fmt.Errorf("failed hashing file: %w", err)
 		}
 
-		outputPath = out
+		processedPath = out
 		processedHash = hsh
+
+		if err := cache.InsertSourceFile(ctx, &sourceFile{
+			Path:             path,
+			Size:             info.Size(),
+			Mtime:            info.ModTime(),
+			ProcessedCommand: command,
+			ProcessedHash:    processedHash,
+		}); err != nil {
+			return fmt.Errorf("failed inserting source to cache: %w", err)
+		}
 	}
 
 	exists, err := cache.CheckOutputFileHashExists(ctx, processedHash)
@@ -210,25 +223,20 @@ func processSource(ctx context.Context, cache *cache, path string, command strin
 	}
 
 	if exists {
-		// Derived output file already exists, do nothing.
 		return nil
 	}
 
-	// Derived file doesn't exist.
-
-	if err := cache.InsertSourceFile(ctx, &sourceFile{
-		Path:             path,
-		Size:             info.Size(),
-		Mtime:            info.ModTime(),
-		ProcessedCommand: command,
-		ProcessedHash:    processedHash,
-	}); err != nil {
-		return fmt.Errorf("failed inserting to cache: %w", err)
+	if processedPath == "" {
+		processedPath, err = applyCommand(ctx, path, command)
+		if err != nil {
+			return fmt.Errorf("failed applying command: %w", err)
+		}
 	}
 
 	// Move the file to dumping directory.
 	moved := filepath.Join(dumpDirectory, filepath.Base(path))
-	if err := os.Rename(outputPath, moved); err != nil {
+	moved, err = move(processedPath, moved)
+	if err != nil {
 		return fmt.Errorf("failed moving file: %w", err)
 	}
 
@@ -245,6 +253,50 @@ func processSource(ctx context.Context, cache *cache, path string, command strin
 		Hash:  processedHash,
 	}); err != nil {
 		return fmt.Errorf("failed inserting output to cache: %w", err)
+	}
+
+	return nil
+}
+
+// cleanDumpDirectory removes files from the dump directory if it finds them elsewhere.
+func cleanDumpDirectory(ctx context.Context, cache *cache, cfg *config) error {
+	dumpDirectory := filepath.Join(cfg.OutputDirectory, cfg.DumpSubdirectory)
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	for f, err := range find(dumpDirectory, cfg.Extensions) {
+		if err != nil {
+			return fmt.Errorf("find error: %w", err)
+		}
+
+		if err := cleanDumpFile(ctx, cache, f); err != nil {
+			return fmt.Errorf("failed cleaning dump file: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// cleanDumpFile removes a file from the dump directory, if a file with the same contents already exists elsewhere.
+func cleanDumpFile(ctx context.Context, cache *cache, path string) error {
+	duplicateExists, err := cache.CheckOutputFileDuplicates(ctx, path)
+	if err != nil {
+		return fmt.Errorf("failed checking hash: %w", err)
+	}
+
+	if !duplicateExists {
+		return nil
+	}
+
+	// Exists.
+
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("failed removing duplicated dump file: %w", err)
+	}
+
+	if err := cache.RemoveOutputFile(ctx, path); err != nil {
+		return fmt.Errorf("failed removing from cache: %w", err)
 	}
 
 	return nil

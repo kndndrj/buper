@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/pressly/goose/v3"
@@ -24,10 +25,14 @@ type cache struct {
 	outputValidate           *sql.Stmt
 	outputInsert             *sql.Stmt
 	outputCheckHash          *sql.Stmt
+	outputCheckDuplicate     *sql.Stmt
 
 	// Auxiliaries.
 	closeConn       func() error
 	closeStatements []func() error
+
+	// Since we use a single transaction, goroutine access must be serialized.
+	mu sync.Mutex
 }
 
 func newCache(path string) (_ *cache, err error) { // WARN: Named return needed!
@@ -164,6 +169,26 @@ func newCache(path string) (_ *cache, err error) { // WARN: Named return needed!
 	c.closeStatements = append(c.closeStatements, outputCheckHash.Close)
 	c.outputCheckHash = outputCheckHash
 
+	outputCheckDuplicate, err := tx.PrepareContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM output_files f2
+			WHERE
+				f2.hash = (
+					SELECT f1.hash
+					FROM output_files f1
+					WHERE f1.path = :path AND f1.valid = 1
+				) AND
+				f2.path <> :path AND
+				f2.valid = 1
+		);
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed preparing check output duplicate statement: %w", err)
+	}
+	c.closeStatements = append(c.closeStatements, outputCheckDuplicate.Close)
+	c.outputCheckDuplicate = outputCheckDuplicate
+
 	return c, nil
 }
 
@@ -185,6 +210,9 @@ func (c *cache) runMigrations(ctx context.Context, conn *sql.DB) error {
 }
 
 func (c *cache) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	errs := make([]error, 0)
 	if err := c.tx.Commit(); err != nil {
 		errs = append(errs, fmt.Errorf("failed committing transaction: %w", err))
@@ -205,6 +233,9 @@ func (c *cache) Close() error {
 
 // Invalidate invalidates the whole cache.
 func (c *cache) Invalidate(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	_, err := c.tx.ExecContext(ctx, "UPDATE source_files SET valid = 0")
 	if err != nil {
 		return fmt.Errorf("failed invalidating source file rows: %w", err)
@@ -222,7 +253,11 @@ func (c *cache) Invalidate(ctx context.Context) error {
 // - Check if the source file record is valid and update it if it is.
 // - Get the processed hash of the output derived from the source if the record is valid.
 func (c *cache) CheckProcessedHashAndValidateSourceFile(ctx context.Context, path string, size int64, mtime time.Time, command string) (processedHash hash, valid bool, err error) {
-	err = c.sourceValidateAndGetHash.QueryRowContext(ctx, path, size, mtime.UnixNano(), command).Scan(&processedHash)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var hsh []byte
+	err = c.sourceValidateAndGetHash.QueryRowContext(ctx, path, size, mtime.UnixNano(), command).Scan(&hsh)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return hash{}, false, nil // No valid record found.
@@ -231,12 +266,16 @@ func (c *cache) CheckProcessedHashAndValidateSourceFile(ctx context.Context, pat
 	}
 
 	// Valid.
+	copy(processedHash[:], hsh)
 	return processedHash, true, nil
 }
 
 // CheckAndValidateOutputFile checks if the cache record of the output file is valid and updates it if it is.
 // Responds true if the record is valid.
 func (c *cache) CheckAndValidateOutputFile(ctx context.Context, path string, size int64, mtime time.Time) (valid bool, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	res, err := c.outputValidate.ExecContext(ctx, path, size, mtime.UnixNano())
 	if err != nil {
 		return false, fmt.Errorf("failed updating rows: %w", err)
@@ -258,16 +297,48 @@ func (c *cache) CheckAndValidateOutputFile(ctx context.Context, path string, siz
 // CheckOutputFileHashExists returns true if a valid output file with the specified hash is found in
 // cache.
 func (c *cache) CheckOutputFileHashExists(ctx context.Context, hash hash) (exists bool, err error) {
-	err = c.outputCheckHash.QueryRowContext(ctx, hash).Scan(&exists)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	err = c.outputCheckHash.QueryRowContext(ctx, hash[:]).Scan(&exists)
 	if err != nil {
-		return false, fmt.Errorf("failed scanning rows: %w", err)
+		return false, fmt.Errorf("failed scanning row: %w", err)
 	}
 
 	return exists, nil
 }
 
+// CheckOutputFileDuplicates checks if an output file with the same contents as the one in "path"
+// exists elsewhere.
+func (c *cache) CheckOutputFileDuplicates(ctx context.Context, path string) (exists bool, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	err = c.outputCheckDuplicate.QueryRowContext(ctx, sql.Named("path", path)).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("failed scanning row: %w", err)
+	}
+
+	return exists, nil
+}
+
+func (c *cache) RemoveOutputFile(ctx context.Context, path string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	_, err := c.tx.ExecContext(ctx, "DELETE FROM output_files WHERE path = ?", path)
+	if err != nil {
+		return fmt.Errorf("failed executing statement: %w", err)
+	}
+
+	return nil
+}
+
 // CleanInvalid deletes invalid records.
 func (c *cache) CleanInvalid(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	_, err := c.tx.ExecContext(ctx, "DELETE FROM source_files WHERE valid = 0")
 	if err != nil {
 		return fmt.Errorf("failed cleaning invalid source rows: %w", err)
@@ -283,7 +354,10 @@ func (c *cache) CleanInvalid(ctx context.Context) error {
 
 // InsertSourceFile inserts a new source file into cache.
 func (c *cache) InsertSourceFile(ctx context.Context, f *sourceFile) error {
-	_, err := c.sourceInsert.ExecContext(ctx, f.Path, f.Size, f.Mtime.UnixNano(), f.ProcessedCommand, f.ProcessedHash)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	_, err := c.sourceInsert.ExecContext(ctx, f.Path, f.Size, f.Mtime.UnixNano(), f.ProcessedCommand, f.ProcessedHash[:])
 	if err != nil {
 		return fmt.Errorf("failed inserting row: %w", err)
 	}
@@ -293,10 +367,83 @@ func (c *cache) InsertSourceFile(ctx context.Context, f *sourceFile) error {
 
 // InsertOutputFile inserts a new output file into cache.
 func (c *cache) InsertOutputFile(ctx context.Context, f *outputFile) error {
-	_, err := c.outputInsert.ExecContext(ctx, f.Path, f.Size, f.Mtime.UnixNano(), f.Hash)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	_, err := c.outputInsert.ExecContext(ctx, f.Path, f.Size, f.Mtime.UnixNano(), f.Hash[:])
 	if err != nil {
 		return fmt.Errorf("failed inserting row: %w", err)
 	}
 
 	return nil
+}
+
+// listSourceFiles is used for tests.
+func (c *cache) listSourceFiles(ctx context.Context) ([]*sourceFile, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	rows, err := c.tx.QueryContext(ctx, "SELECT * FROM source_files WHERE valid = 1")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var recs []*sourceFile
+
+	for rows.Next() {
+		var rec sourceFile
+		var unixnanos int64
+		var hash []byte
+		var valid bool
+		err := rows.Scan(&rec.Path, &rec.Size, &unixnanos, &rec.ProcessedCommand, &hash, &valid)
+		if err != nil {
+			return nil, err
+		}
+
+		rec.Mtime = time.Unix(0, unixnanos).UTC()
+		copy(rec.ProcessedHash[:], hash)
+
+		recs = append(recs, &rec)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return recs, nil
+}
+
+// listOutputFiles is used for tests.
+func (c *cache) listOutputFiles(ctx context.Context) ([]*outputFile, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	rows, err := c.tx.QueryContext(ctx, "SELECT * FROM output_files WHERE valid = 1")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var recs []*outputFile
+
+	for rows.Next() {
+		var rec outputFile
+		var unixnanos int64
+		var hash []byte
+		var valid bool
+		err := rows.Scan(&rec.Path, &rec.Size, &unixnanos, &hash, &valid)
+		if err != nil {
+			return nil, err
+		}
+
+		rec.Mtime = time.Unix(0, unixnanos).UTC()
+		copy(rec.Hash[:], hash)
+
+		recs = append(recs, &rec)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return recs, nil
 }
