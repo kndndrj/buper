@@ -6,6 +6,8 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -207,6 +209,8 @@ var embededMigrations embed.FS
 
 func (c *cache) runMigrations(ctx context.Context, conn *sql.DB) error {
 	goose.SetBaseFS(embededMigrations) // Embed migrations into binary.
+	// Silence goose output
+	goose.SetLogger(log.New(io.Discard, "", 0))
 
 	if err := goose.SetDialect("sqlite"); err != nil {
 		return fmt.Errorf("failed settings goose dialect: %w", err)

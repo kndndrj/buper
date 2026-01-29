@@ -88,6 +88,14 @@ func createDirs(cfg *config) error {
 	return nil
 }
 
+func cleanup(cfg *config) error {
+	if err := os.RemoveAll(cfg.TempDir()); err != nil {
+		return fmt.Errorf("failed removing tempdir: %w", err)
+	}
+
+	return nil
+}
+
 // applyCommand applies command to the source path and produces an output at output path.
 func applyCommand(ctx context.Context, sourcePath string, cfg *config) (outputPath string, err error) {
 	rand := strconv.Itoa(int(time.Now().UnixNano()))

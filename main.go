@@ -54,7 +54,6 @@ func m() int {
 		return 1
 	}
 
-	fmt.Println("Success")
 	return 0
 }
 
@@ -81,9 +80,13 @@ func process(ctx context.Context, cfg *config, cache *cache) error {
 		return fmt.Errorf("failed invalidating cache: %w", err)
 	}
 
+	fmt.Println("event: updating output cache")
+
 	if err := updateOutputCache(ctx, cache, cfg); err != nil {
 		return fmt.Errorf("failed updating output directory cache: %w", err)
 	}
+
+	fmt.Println("event: processing sources")
 
 	if err := processSources(ctx, cache, cfg); err != nil {
 		return fmt.Errorf("failed processing sources: %w", err)
@@ -93,8 +96,14 @@ func process(ctx context.Context, cfg *config, cache *cache) error {
 		return fmt.Errorf("failed cleaning cache: %w", err)
 	}
 
+	fmt.Println("event: cleaning dump directory")
+
 	if err := cleanDumpDirectory(ctx, cache, cfg); err != nil {
 		return fmt.Errorf("failed cleaning dump directory: %w", err)
+	}
+
+	if err := cleanup(cfg); err != nil {
+		return fmt.Errorf("failed cleaning up: %w", err)
 	}
 
 	return nil
@@ -243,6 +252,8 @@ func processSource(ctx context.Context, cache *cache, path string, cfg *config) 
 		return fmt.Errorf("failed inserting output to cache: %w", err)
 	}
 
+	fmt.Println("processed:", path, "=>", moved)
+
 	return nil
 }
 
@@ -286,6 +297,8 @@ func cleanDumpFile(ctx context.Context, cache *cache, path string) error {
 	if err := cache.RemoveOutputFile(ctx, path); err != nil {
 		return fmt.Errorf("failed removing from cache: %w", err)
 	}
+
+	fmt.Println("cleaned:", path)
 
 	return nil
 }
