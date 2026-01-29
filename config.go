@@ -1,13 +1,14 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
+	"sort"
 	"strings"
-	"time"
 )
 
 type config struct {
@@ -21,21 +22,37 @@ type config struct {
 	Command string
 	// File extensions to search for.
 	Extensions []string
-	// Cache location.
-	CachePath string
+	// Cache directory location.
+	CacheDirectory string
+}
+
+func (c *config) CachePath() string {
+	return filepath.Join(c.CacheDirectory, "cache.sqlite")
+}
+
+func (c *config) TempDir() string {
+	return filepath.Join(c.CacheDirectory, "tmp")
+}
+
+func (c *config) DumpDirectory() string {
+	return filepath.Join(c.OutputDirectory, c.DumpSubdirectory)
 }
 
 func parseConfig() (*config, error) {
-	rand := strconv.Itoa(int(time.Now().UnixNano()))
-	defaultCache := filepath.Join(os.TempDir(), "buper-"+rand+".cache")
-	defaultCacheDisplay := filepath.Join(os.TempDir(), "buper-<rand>.cache")
+	hash := flagHash()
+	defaultCacheDir := filepath.Join(os.TempDir(), "buper-cache", hash)
+	defaultCacheDirDisplay := filepath.Join(os.TempDir(), "buper-cache", "<hash>")
+	if dir, err := os.UserCacheDir(); err == nil {
+		defaultCacheDir = filepath.Join(dir, "buper", hash)
+		defaultCacheDirDisplay = filepath.Join(dir, "buper", "<hash>")
+	}
 
-	sourceDirsArg := flag.String("sources", "", "(required) Comma-separated list of source directory paths.")
-	outputDirArg := flag.String("output", "", "(required) Path to output directory.")
+	sourceDirsArg := flag.String("source-dirs", "", "(required) Comma-separated list of source directory paths.")
+	outputDirArg := flag.String("output-dir", "", "(required) Path to output directory.")
 	extensionsArg := flag.String("extensions", "", "(required) Comma-separated list of file extensions to include.")
-	dumpDirArg := flag.String("dump", "dump", "Subdirectory dumping path relative to output directory.")
+	dumpDirArg := flag.String("dump-subdir", "dump", "Subdirectory dumping path relative to output directory.")
 	commandArg := flag.String("command", "cp $in $out", "Command applied on sources to produce outputs.")
-	cacheArg := flag.String("cache", defaultCacheDisplay, "Path to cache file.")
+	cacheDirArg := flag.String("cache-dir", defaultCacheDirDisplay, "Path to cache file.")
 
 	flag.Parse()
 
@@ -51,9 +68,9 @@ func parseConfig() (*config, error) {
 		return nil, fmt.Errorf("failed parsing extensions: %w", err)
 	}
 
-	cache := *cacheArg
-	if cache == defaultCacheDisplay {
-		cache = defaultCache
+	cacheDir := *cacheDirArg
+	if cacheDir == defaultCacheDirDisplay {
+		cacheDir = defaultCacheDir
 	}
 
 	return &config{
@@ -62,7 +79,7 @@ func parseConfig() (*config, error) {
 		DumpSubdirectory:  *dumpDirArg,
 		Command:           *commandArg,
 		Extensions:        extensions,
-		CachePath:         cache,
+		CacheDirectory:    cacheDir,
 	}, nil
 }
 
@@ -77,4 +94,19 @@ func parseList(raw string) ([]string, error) {
 		}
 	}
 	return list, nil
+}
+
+func flagHash() string {
+	// Make a copy so we don't mutate the original slice.
+	sorted := make([]string, len(os.Args))
+	copy(sorted, os.Args)
+
+	sort.Strings(sorted)
+
+	h := sha256.New()
+	for _, v := range sorted {
+		h.Write([]byte(v))
+	}
+
+	return hex.EncodeToString(h.Sum(nil))
 }

@@ -75,18 +75,25 @@ func md5Hash(path string) (hash, error) {
 	return result, nil
 }
 
-var tempdir = filepath.Join(os.TempDir(), "buper")
+func createDirs(cfg *config) error {
+	if err := os.MkdirAll(cfg.TempDir(), 0o750); err != nil {
+		return fmt.Errorf("creating tempdir: %w", err)
+	}
 
-func createTempdir() error {
-	return os.MkdirAll(tempdir, 0o700)
+	dumpdir := filepath.Join(cfg.OutputDirectory, cfg.DumpSubdirectory)
+	if err := os.MkdirAll(dumpdir, 0o750); err != nil {
+		return fmt.Errorf("creating output and dump dirs: %w", err)
+	}
+
+	return nil
 }
 
 // applyCommand applies command to the source path and produces an output at output path.
-func applyCommand(ctx context.Context, sourcePath, command string) (outputPath string, err error) {
+func applyCommand(ctx context.Context, sourcePath string, cfg *config) (outputPath string, err error) {
 	rand := strconv.Itoa(int(time.Now().UnixNano()))
-	outputPath = filepath.Join(tempdir, filepath.Base(sourcePath)+"."+rand)
+	outputPath = filepath.Join(cfg.TempDir(), filepath.Base(sourcePath)+"."+rand)
 
-	command = strings.ReplaceAll(command, "$in", `"`+sourcePath+`"`)
+	command := strings.ReplaceAll(cfg.Command, "$in", `"`+sourcePath+`"`)
 	command = strings.ReplaceAll(command, "$out", `"`+outputPath+`"`)
 
 	// Execute using sh -c to allow piping and shell features.

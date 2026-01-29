@@ -252,25 +252,17 @@ func TestIntegration(t *testing.T) {
 			a := require.New(t)
 
 			temp := t.TempDir()
+			cacheDir := filepath.Join(temp, "cache")
+			err := os.MkdirAll(cacheDir, 0o755)
+			a.NoError(err)
+
 			root := filepath.Join(temp, "root")
 			t.Logf("Using temporary dir: %s", temp)
 
 			srcdir := filepath.Join(root, "src")
 			outdir := filepath.Join(root, "out")
-			err := os.MkdirAll(srcdir, 0o755)
+			err = os.MkdirAll(srcdir, 0o755)
 			a.NoError(err)
-			err = os.MkdirAll(outdir, 0o755)
-			a.NoError(err)
-			err = os.MkdirAll(filepath.Join(outdir, "dump"), 0o755)
-			a.NoError(err)
-
-			makeFS(t, t0, root, tt.fs)
-
-			cache, err := newCache(filepath.Join(temp, "cache"))
-			a.NoError(err)
-			t.Cleanup(func() { _ = cache.Close() })
-
-			prefillCache(t, root, cache, tt.cache)
 
 			cfg := &config{
 				SourceDirectories: []string{srcdir},
@@ -278,7 +270,16 @@ func TestIntegration(t *testing.T) {
 				DumpSubdirectory:  "dump",
 				Command:           cmd,
 				Extensions:        []string{".yes"},
+				CacheDirectory:    cacheDir,
 			}
+
+			makeFS(t, t0, root, tt.fs)
+
+			cache, err := newCache(cfg.CachePath())
+			a.NoError(err)
+			t.Cleanup(func() { _ = cache.Close() })
+
+			prefillCache(t, root, cache, tt.cache)
 
 			err = process(t.Context(), cfg, cache)
 			a.NoError(err, "unexpected process error")

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -36,10 +38,18 @@ type cache struct {
 }
 
 func newCache(path string) (_ *cache, err error) { // WARN: Named return needed!
+
+	path = filepath.Clean(path)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return nil, fmt.Errorf("failed creating cache parent directory: %w", err)
+	}
+
 	dsn := &url.URL{
 		Scheme: "file",
-		Path:   path,
+		Path:   filepath.Clean(path),
 	}
+
 	q := dsn.Query()
 	q.Set("_txlock", "immediate")       // Immediately start a transaction on .BeginTx.
 	q.Set("_pragma", "busy_timeout(0)") // Don't wait for acquiring the transaction.

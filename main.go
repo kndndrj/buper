@@ -59,7 +59,7 @@ func m() int {
 }
 
 func run(ctx context.Context, cfg *config) error {
-	cache, err := newCache(cfg.CachePath)
+	cache, err := newCache(cfg.CachePath())
 	if err != nil {
 		return fmt.Errorf("failed creating cache: %w", err)
 	}
@@ -73,8 +73,8 @@ func run(ctx context.Context, cfg *config) error {
 
 // process contains the core logic.
 func process(ctx context.Context, cfg *config, cache *cache) error {
-	if err := createTempdir(); err != nil {
-		return fmt.Errorf("failed creating temporary directory: %w", err)
+	if err := createDirs(cfg); err != nil {
+		return fmt.Errorf("failed creating directories: %w", err)
 	}
 
 	if err := cache.Invalidate(ctx); err != nil {
@@ -150,8 +150,6 @@ func updateOutputCacheFile(ctx context.Context, cache *cache, path string) error
 
 // processSources processes source files to produce new output files.
 func processSources(ctx context.Context, cache *cache, cfg *config) error {
-	dumpDirectory := filepath.Join(cfg.OutputDirectory, cfg.DumpSubdirectory)
-
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -161,7 +159,7 @@ func processSources(ctx context.Context, cache *cache, cfg *config) error {
 				return fmt.Errorf("find error: %w", err)
 			}
 
-			if err := processSource(ctx, cache, f, cfg.Command, dumpDirectory); err != nil {
+			if err := processSource(ctx, cache, f, cfg); err != nil {
 				return fmt.Errorf("failed processing source: %w", err)
 			}
 		}
@@ -170,20 +168,20 @@ func processSources(ctx context.Context, cache *cache, cfg *config) error {
 	return nil
 }
 
-func processSource(ctx context.Context, cache *cache, path string, command string, dumpDirectory string) error {
+func processSource(ctx context.Context, cache *cache, path string, cfg *config) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("failed stating file: %w", err)
 	}
 
-	processedHash, valid, err := cache.CheckProcessedHashAndValidateSourceFile(ctx, path, info.Size(), info.ModTime(), command)
+	processedHash, valid, err := cache.CheckProcessedHashAndValidateSourceFile(ctx, path, info.Size(), info.ModTime(), cfg.Command)
 	if err != nil {
 		return fmt.Errorf("failed checking file cache: %w", err)
 	}
 
 	var processedPath string
 	if !valid {
-		out, err := applyCommand(ctx, path, command)
+		out, err := applyCommand(ctx, path, cfg)
 		if err != nil {
 			return fmt.Errorf("failed applying command: %w", err)
 		}
@@ -200,7 +198,7 @@ func processSource(ctx context.Context, cache *cache, path string, command strin
 			Path:             path,
 			Size:             info.Size(),
 			Mtime:            info.ModTime(),
-			ProcessedCommand: command,
+			ProcessedCommand: cfg.Command,
 			ProcessedHash:    processedHash,
 		}); err != nil {
 			return fmt.Errorf("failed inserting source to cache: %w", err)
@@ -217,14 +215,14 @@ func processSource(ctx context.Context, cache *cache, path string, command strin
 	}
 
 	if processedPath == "" {
-		processedPath, err = applyCommand(ctx, path, command)
+		processedPath, err = applyCommand(ctx, path, cfg)
 		if err != nil {
 			return fmt.Errorf("failed applying command: %w", err)
 		}
 	}
 
 	// Move the file to dumping directory.
-	moved := filepath.Join(dumpDirectory, filepath.Base(path))
+	moved := filepath.Join(cfg.DumpDirectory(), filepath.Base(path))
 	moved, err = move(processedPath, moved)
 	if err != nil {
 		return fmt.Errorf("failed moving file: %w", err)
