@@ -99,13 +99,18 @@ func cleanup(cfg *config) error {
 // applyCommand applies command to the source path and produces an output at output path.
 func applyCommand(ctx context.Context, sourcePath string, cfg *config) (outputPath string, err error) {
 	rand := strconv.Itoa(int(time.Now().UnixNano()))
-	outputPath = filepath.Join(cfg.TempDir(), filepath.Base(sourcePath)+"."+rand)
+
+	// NOTE: output path must preserve the extension, since some programs (like ffmpeg) depend on it.
+	ext := filepath.Ext(sourcePath)
+	fname := filepath.Base(sourcePath)
+	fname = strings.TrimSuffix(fname, ext)
+	outputPath = filepath.Join(cfg.TempDir(), fname+"-"+rand+ext)
 
 	command := strings.ReplaceAll(cfg.Command, "$in", `"`+sourcePath+`"`)
 	command = strings.ReplaceAll(command, "$out", `"`+outputPath+`"`)
 
 	// Execute using sh -c to allow piping and shell features.
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd := exec.CommandContext(ctx, "sh", "-c", command) //nolint:gosec
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
