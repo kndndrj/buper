@@ -114,7 +114,7 @@ func updateOutputCache(ctx context.Context, cache *cache, cfg *config) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	for f, err := range find(cfg.OutputDirectory, cfg.Extensions) {
+	for f, err := range find(cfg.OutputDirectory, cfg.Exclude) {
 		if err != nil {
 			return fmt.Errorf("find error: %w", err)
 		}
@@ -163,7 +163,7 @@ func processSources(ctx context.Context, cache *cache, cfg *config) error {
 	defer cancel()
 
 	for _, dir := range cfg.SourceDirectories {
-		for f, err := range find(dir, cfg.Extensions) {
+		for f, err := range find(dir, cfg.Exclude) {
 			if err != nil {
 				return fmt.Errorf("find error: %w", err)
 			}
@@ -264,7 +264,7 @@ func cleanDumpDirectory(ctx context.Context, cache *cache, cfg *config) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	for f, err := range find(dumpDirectory, cfg.Extensions) {
+	for f, err := range find(dumpDirectory, cfg.Exclude) {
 		if err != nil {
 			return fmt.Errorf("find error: %w", err)
 		}
@@ -289,7 +289,6 @@ func cleanDumpFile(ctx context.Context, cache *cache, path string) error {
 	}
 
 	// Exists.
-
 	if err := os.Remove(path); err != nil {
 		return fmt.Errorf("failed removing duplicated dump file: %w", err)
 	}

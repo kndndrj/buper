@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/bmatcuk/doublestar/v4"
 )
 
 type config struct {
@@ -20,8 +22,8 @@ type config struct {
 	DumpSubdirectory string
 	// Command to apply to each source.
 	Command string
-	// File extensions to search for.
-	Extensions []string
+	// Path patterns to exclude.
+	Exclude []string
 	// Cache directory location.
 	CacheDirectory string
 }
@@ -49,23 +51,24 @@ func parseConfig() (*config, error) {
 
 	sourceDirsArg := flag.String("source-dirs", "", "(required) Comma-separated list of source directory paths.")
 	outputDirArg := flag.String("output-dir", "", "(required) Path to output directory.")
-	extensionsArg := flag.String("extensions", "", "(required) Comma-separated list of file extensions to include.")
+	excludeArg := flag.String("exclude", "", "Comma-separated list of path patterns to exclude.")
 	dumpDirArg := flag.String("dump-subdir", "dump", "Subdirectory dumping path relative to output directory.")
 	commandArg := flag.String("command", "cp $in $out", "Command applied on sources to produce outputs.")
 	cacheDirArg := flag.String("cache-dir", defaultCacheDirDisplay, "Path to cache file.")
 
 	flag.Parse()
 
-	sourceDirs, err := parseList(*sourceDirsArg)
+	sourceDirs, err := parseSourceDirs(*sourceDirsArg)
 	if err != nil {
 		return nil, fmt.Errorf("failed parsing source directories: %w", err)
 	}
 	if *outputDirArg == "" {
 		return nil, fmt.Errorf("no output directory provided")
 	}
-	extensions, err := parseList(*extensionsArg)
+
+	exclusions, err := parseExclusions(*excludeArg)
 	if err != nil {
-		return nil, fmt.Errorf("failed parsing extensions: %w", err)
+		return nil, fmt.Errorf("failed parsing exclusions: %w", err)
 	}
 
 	cacheDir := *cacheDirArg
@@ -78,12 +81,12 @@ func parseConfig() (*config, error) {
 		OutputDirectory:   *outputDirArg,
 		DumpSubdirectory:  *dumpDirArg,
 		Command:           *commandArg,
-		Extensions:        extensions,
+		Exclude:           exclusions,
 		CacheDirectory:    cacheDir,
 	}, nil
 }
 
-func parseList(raw string) ([]string, error) {
+func parseSourceDirs(raw string) ([]string, error) {
 	list := strings.Split(raw, ",")
 	if len(list) == 0 {
 		return nil, fmt.Errorf("no entry provided")
@@ -93,6 +96,22 @@ func parseList(raw string) ([]string, error) {
 			return nil, fmt.Errorf("empty value in list")
 		}
 	}
+	return list, nil
+}
+
+func parseExclusions(raw string) ([]string, error) {
+	if raw == "" {
+		return []string{}, nil
+	}
+
+	list := strings.Split(raw, ",")
+
+	for _, p := range list {
+		if !doublestar.ValidatePattern(p) {
+			return nil, fmt.Errorf("invalid exclude pattern: %s", p)
+		}
+	}
+
 	return list, nil
 }
 

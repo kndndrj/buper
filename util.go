@@ -16,10 +16,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/bmatcuk/doublestar/v4"
 )
 
 // find recursively lists the files with given extensions within a directory.
-func find(path string, extensions []string) iter.Seq2[string, error] {
+func find(path string, exclusions []string) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
 		err := filepath.WalkDir(path, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -30,10 +32,12 @@ func find(path string, extensions []string) iter.Seq2[string, error] {
 				return nil // Skip directories.
 			}
 
-			if hasExtension(path, extensions) {
-				if !yield(path, nil) {
-					return fs.SkipAll
-				}
+			if matchPatterns(path, exclusions) {
+				return nil // Skip exclude pattern.
+			}
+
+			if !yield(path, nil) {
+				return fs.SkipAll
 			}
 
 			return nil
@@ -44,10 +48,10 @@ func find(path string, extensions []string) iter.Seq2[string, error] {
 	}
 }
 
-// hasExtension checks if a path has any of these extensions.
-func hasExtension(path string, extensions []string) bool {
-	for _, ext := range extensions {
-		if strings.HasSuffix(path, ext) {
+// matchPatterns checks if the path matches any of the provided patterns.
+func matchPatterns(path string, patterns []string) bool {
+	for _, pattern := range patterns {
+		if doublestar.MatchUnvalidated(pattern, path) {
 			return true
 		}
 	}

@@ -39,8 +39,9 @@ func TestIntegration(t *testing.T) {
 	cases := []struct {
 		comment string
 
-		fs    map[string]string
-		cache []any // *sourceFile or *outputFile.
+		fs      map[string]string
+		cache   []any // *sourceFile or *outputFile.
+		exclude []string
 
 		expectFS    map[string]string
 		expectCache []any // *sourceFile or *outputFile.
@@ -62,7 +63,8 @@ func TestIntegration(t *testing.T) {
 				"src/sub/sub/file2.yes": "content of file 2",
 				"src/sub/sub/file3.no":  "content of file 3",
 			},
-			cache: nil,
+			cache:   nil,
+			exclude: []string{"**/*.no"},
 
 			expectFS: map[string]string{
 				"src/file1.yes":         "content of file 1",
@@ -169,7 +171,6 @@ func TestIntegration(t *testing.T) {
 				"src/file2.yes": "content of file 2",
 				"src/file3.yes": "content of file 3",
 				"src/file4.yes": "content of file 4",
-				"src/file5.no":  "content of file 5",
 
 				"out/file1.yes": "content of file 1 - modified",
 
@@ -189,7 +190,6 @@ func TestIntegration(t *testing.T) {
 				"src/file2.yes": "content of file 2",
 				"src/file3.yes": "content of file 3",
 				"src/file4.yes": "content of file 4",
-				"src/file5.no":  "content of file 5",
 
 				"out/file1.yes": "content of file 1 - modified",
 
@@ -245,6 +245,41 @@ func TestIntegration(t *testing.T) {
 				out("out/dump/file 1.yes", 28, t1, "2887f195dec56162d856acb79f91c5ef"),
 			},
 		},
+		{
+			comment: "exclude paths",
+
+			fs: map[string]string{
+				"src/excludedir/file.yes":     "1",
+				"src/excludedir/sub/file.yes": "2",
+				"src/file.no":                 "3",
+				"src/sub/file.no":             "4",
+				"src/sub/file1.exact":         "5",
+				"src/sub/sub/sub/file2.exact": "6",
+
+				// This should not be removed.
+				"out/dump/file.no": "7",
+			},
+			exclude: []string{
+				"**/excludedir/**",
+				"**/*.no",
+				"**/src/*/file1.exact",
+				"**/src/**/file2.exact",
+			},
+
+			expectFS: map[string]string{
+				"src/excludedir/file.yes":     "1",
+				"src/excludedir/sub/file.yes": "2",
+				"src/file.no":                 "3",
+				"src/sub/file.no":             "4",
+				"src/sub/file1.exact":         "5",
+				"src/sub/sub/sub/file2.exact": "6",
+
+				// No outputs should be created.
+
+				"out/dump/file.no": "7",
+			},
+			expectCache: nil,
+		},
 	}
 
 	for _, tt := range cases {
@@ -269,7 +304,7 @@ func TestIntegration(t *testing.T) {
 				OutputDirectory:   outdir,
 				DumpSubdirectory:  "dump",
 				Command:           cmd,
-				Extensions:        []string{".yes"},
+				Exclude:           tt.exclude,
 				CacheDirectory:    cacheDir,
 			}
 

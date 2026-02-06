@@ -3,6 +3,7 @@ module github.com/kndndrj/buper
 go 1.25.4
 
 require (
+	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/pressly/goose/v3 v3.26.0
 	github.com/stretchr/testify v1.11.0
 	modernc.org/sqlite v1.44.3
