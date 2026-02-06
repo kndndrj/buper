@@ -114,7 +114,7 @@ func applyCommand(ctx context.Context, sourcePath string, cfg *config) (outputPa
 	command = strings.ReplaceAll(command, "$out", `"`+outputPath+`"`)
 
 	// Execute using sh -c to allow piping and shell features.
-	cmd := exec.CommandContext(ctx, "sh", "-c", command) //nolint:gosec
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command) //nolint:gosec
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
