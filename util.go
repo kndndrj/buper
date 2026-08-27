@@ -28,8 +28,8 @@ func find(path string, exclusions []string) iter.Seq2[string, error] {
 				return err // Stop iteration.
 			}
 
-			if d.IsDir() {
-				return nil // Skip directories.
+			if !d.Type().IsRegular() {
+				return nil // Skip directories, symlinks and other non-regular files.
 			}
 
 			if matchPatterns(path, exclusions) {

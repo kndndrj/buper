@@ -39,10 +39,12 @@ func TestIntegration(t *testing.T) {
 	cases := []struct {
 		comment string
 
-		fs      map[string]string
-		cache   []any // *sourceFile or *outputFile.
-		exclude []string
+		fs       map[string]string
+		symlinks map[string]string // Link path to target path, both relative to root.
+		cache    []any             // *sourceFile or *outputFile.
+		exclude  []string
 
+		// Symlinks are represented as "-> <target relative to root>".
 		expectFS    map[string]string
 		expectCache []any // *sourceFile or *outputFile.
 	}{
@@ -246,6 +248,44 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
+			comment: "symlinks are skipped",
+
+			fs: map[string]string{
+				"src/file1.yes":  "content of file 1",
+				"src/target.yes": "content of file 2",
+
+				"out/target.yes": "content of file 3",
+			},
+			symlinks: map[string]string{
+				"src/link.yes":     "src/target.yes",
+				"src/dangling.yes": "src/removed.yes", // Target doesn't exist.
+				"out/link.yes":     "out/target.yes",
+				"out/dangling.yes": "out/removed.yes", // Target doesn't exist.
+			},
+
+			expectFS: map[string]string{
+				"src/file1.yes":  "content of file 1",
+				"src/target.yes": "content of file 2",
+
+				"out/target.yes": "content of file 3",
+
+				"src/link.yes":     "-> src/target.yes",
+				"src/dangling.yes": "-> src/removed.yes",
+				"out/link.yes":     "-> out/target.yes",
+				"out/dangling.yes": "-> out/removed.yes",
+
+				"out/dump/file1.yes":  "content of file 1 - modified",
+				"out/dump/target.yes": "content of file 2 - modified",
+			},
+			expectCache: []any{
+				src("src/file1.yes", 17, t0, cmd, "2887f195dec56162d856acb79f91c5ef"),
+				src("src/target.yes", 17, t0, cmd, "70505225a9da2655c4d056e1555890b1"),
+				out("out/target.yes", 17, t0, "0e34ac1986cc8d26da415f9ef91565fb"),
+				out("out/dump/file1.yes", 28, t1, "2887f195dec56162d856acb79f91c5ef"),
+				out("out/dump/target.yes", 28, t1, "70505225a9da2655c4d056e1555890b1"),
+			},
+		},
+		{
 			comment: "exclude paths",
 
 			fs: map[string]string{
@@ -309,6 +349,7 @@ func TestIntegration(t *testing.T) {
 			}
 
 			makeFS(t, t0, root, tt.fs)
+			makeSymlinks(t, root, tt.symlinks)
 
 			cache, err := newCache(cfg.CachePath())
 			a.NoError(err)
@@ -366,8 +407,25 @@ func makeFS(tb testing.TB, mtime time.Time, root string, fs map[string]string) {
 	}
 }
 
+// makeSymlinks creates symbolic links from the links map (link path to target path, both relative
+// to root). Targets don't have to exist.
+func makeSymlinks(tb testing.TB, root string, links map[string]string) {
+	tb.Helper()
+	a := require.New(tb)
+
+	for path, target := range links {
+		path := filepath.Join(root, path)
+
+		err := os.MkdirAll(filepath.Dir(path), 0o755)
+		a.NoError(err)
+
+		err = os.Symlink(filepath.Join(root, target), path)
+		a.NoError(err)
+	}
+}
+
 // assertFS asserts that the filesystem at actualRoot contains exactly the same files as the
-// expectFS map.
+// expectFS map. Symlinks are represented as "-> <target relative to root>".
 func assertFS(tb testing.TB, expectFS map[string]string, actualRoot string) {
 	tb.Helper()
 	a := require.New(tb)
@@ -382,6 +440,18 @@ func assertFS(tb testing.TB, expectFS map[string]string, actualRoot string) {
 
 		if d.IsDir() {
 			return nil // Skip directories.
+		}
+
+		if d.Type()&fs.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+
+			path = strings.TrimPrefix(path, root)
+			actualFS[path] = "-> " + strings.TrimPrefix(target, root)
+
+			return nil
 		}
 
 		content, err := os.ReadFile(path)
